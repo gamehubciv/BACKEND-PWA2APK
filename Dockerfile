@@ -40,7 +40,7 @@ RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
       "build-tools;34.0.0"
 
 # ── 6. Bubblewrap CLI ────────────────────────────────
-RUN npm install -g @bubblewrap/cli@1.21.1
+RUN npm install -g @bubblewrap/cli@1.21.0
 
 # ── 7. Config Bubblewrap ─────────────────────────────
 RUN mkdir -p /root/.bubblewrap \
