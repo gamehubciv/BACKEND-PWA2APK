@@ -92,7 +92,7 @@ function run(cmd, cwd, timeoutMs = 300000) {
       maxBuffer: 20 * 1024 * 1024,
       env: {
         ...process.env,
-        JAVA_HOME: '/usr/lib/jvm/java-17-openjdk-amd64',
+        JAVA_HOME: '/opt/java/openjdk',
         ANDROID_HOME: '/opt/android-sdk',
         ANDROID_SDK_ROOT: '/opt/android-sdk',
         // Répondre "oui" automatiquement aux prompts Bubblewrap
@@ -302,14 +302,12 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
 
     fs.writeFileSync(path.join(appDir, 'twa-manifest.json'), JSON.stringify(twaManifest, null, 2));
 
-    /* ── Étape 4 : Bubblewrap init ── */
+    /* ── Étape 4 : Bubblewrap init (non-interactif via twa-manifest.json) ── */
     _writeStatus(jobDir, { status: 'building', step: 4, message: '🔧 Génération du projet Android…', appName });
-    // Construire l'URL du manifest sans double slash
-    const manifestUrl = pwaUrl.replace(/\/+$/, '') + '/manifest.json';
-    // Utiliser bubblewrap directement (installé globalement dans le Docker)
-    // --yes répond "oui" à toutes les questions interactives
+    // --twa-manifest pointe sur le fichier JSON déjà construit : zéro question interactive.
+    const twaManifestPath = path.join(appDir, 'twa-manifest.json');
     await run(
-      `bubblewrap init --manifest="${manifestUrl}" --directory="${appDir}" --skipPwaValidation`,
+      `bubblewrap init --twa-manifest="${twaManifestPath}" --directory="${appDir}" --skipPwaValidation`,
       jobDir,
       180000
     );
