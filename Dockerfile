@@ -10,9 +10,10 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/34.0.0"
 
-# ── 1. Dépendances système ───────────────────────────
+# ── 1. Dépendances système (+ python3 et build-essential pour node-pty) ──
 RUN apt-get update && apt-get install -y \
     curl wget unzip git ca-certificates gnupg \
+    python3 make g++ build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 2. Node 20 ───────────────────────────────────────
