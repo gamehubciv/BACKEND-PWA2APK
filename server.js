@@ -308,7 +308,7 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
 
     console.log('[Build] Lancement de bubblewrap update dans', appDir);
     await run(
-      `bubblewrap update --skipVersionUpgrade --manifest="${appDir}"`,
+      `bubblewrap update --skipVersionUpgrade --manifest="${path.join(appDir, "twa-manifest.json")}"`,
       appDir,
       120000
     );
