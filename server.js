@@ -92,7 +92,7 @@ function run(cmd, cwd, timeoutMs = 300000) {
       maxBuffer: 20 * 1024 * 1024,
       env: {
         ...process.env,
-        JAVA_HOME: '/usr/lib/jvm/java-17-openjdk-amd64',
+        JAVA_HOME: '/opt/java/openjdk',
         ANDROID_HOME: '/opt/android-sdk',
         ANDROID_SDK_ROOT: '/opt/android-sdk',
         // Répondre "oui" automatiquement aux prompts Bubblewrap
@@ -252,71 +252,15 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       ksPath = await generateKeystore(jobDir, ksAlias, ksPassword, ksDname);
     }
 
-    /* ── Étape 3 : Générer projet TWA avec Bubblewrap ── */
+    /* ── Étape 3 : Préparer le projet Android ── */
     _writeStatus(jobDir, { status: 'building', step: 3, message: '📦 Initialisation du projet TWA…', appName });
-    const appDir = path.join(jobDir, 'app');
+    const appDir     = path.join(jobDir, 'app');
+    const host       = new URL(pwaUrl).hostname;
+    const cleanUrl   = pwaUrl.replace(/\/+$/, '');
+    const manifestUrl = cleanUrl + '/manifest.json';
     fs.mkdirSync(appDir, { recursive: true });
 
-    // Créer le fichier de config twa-manifest.json pour Bubblewrap
-    const twaManifest = {
-      packageId: packageName,
-      host: new URL(pwaUrl).hostname,
-      name: appName,
-      launcherName: shortName || appName,
-      display: 'standalone',
-      orientation: 'default',
-      themeColor: themeColor || '#1a73e8',
-      navigationColor: themeColor || '#1a73e8',
-      navigationColorDark: themeColor || '#1a73e8',
-      navigationDividerColor: themeColor || '#1a73e8',
-      navigationDividerColorDark: themeColor || '#1a73e8',
-      backgroundColor: bgColor || '#ffffff',
-      startUrl: startUrl || '/',
-      iconUrl: iconUrl512,
-      maskableIconUrl: iconUrl512,
-      monochromeIconUrl: iconUrl512,
-      appVersion: versionName,
-      appVersionCode: parseInt(versionCode),
-      signingKey: {
-        path: ksPath,
-        alias: ksAlias,
-      },
-      signingKeyPassphrase: ksPassword,
-      storeKeyPassphrase: ksPassword,
-      minSdkVersion: 21,
-      targetSdkVersion: 34,
-      retainedBundles: [],
-      enableNotifications: false,
-      shortcuts: [],
-      generatorApp: 'pwa2apk',
-      webManifestUrl: `${pwaUrl.replace(/\/+$/, '')}/manifest.json`,
-      fallbackType: 'customtabs',
-      features: { locationDelegation: { enabled: true }, playBilling: { enabled: false } },
-      alphaDependencies: { enabled: false },
-      enableSiteSettingsShortcut: true,
-      isChromeOSOnly: false,
-      isMetaQuest: false,
-      fullyImmersive: false,
-      pwaUrl: pwaUrl,
-    };
-
-    fs.writeFileSync(path.join(appDir, 'twa-manifest.json'), JSON.stringify(twaManifest, null, 2));
-
-    /* ── Étape 4 : Bubblewrap init ── */
-    _writeStatus(jobDir, { status: 'building', step: 4, message: '🔧 Génération du projet Android…', appName });
-    // Construire l'URL du manifest sans double slash
-    const manifestUrl = pwaUrl.replace(/\/+$/, '') + '/manifest.json';
-    // Utiliser bubblewrap directement (installé globalement dans le Docker)
-    // --yes répond "oui" à toutes les questions interactives
-    await run(
-      `bubblewrap init --manifest="${manifestUrl}" --directory="${appDir}" --skipPwaValidation`,
-      jobDir,
-      180000
-    );
-
-    /* ── Étape 5 : Bubblewrap build ── */
-    _writeStatus(jobDir, { status: 'building', step: 5, message: '⚙️ Compilation de l\'APK (2-5 min)…', appName });
-    // Écrire le config bubblewrap dans HOME et dans appDir/.bubblewrap
+    // S'assurer que le config bubblewrap est correct (jdkPath + androidSdkPath)
     const bwConfig = {
       jdkPath: process.env.JAVA_HOME || '/opt/java/openjdk',
       androidSdkPath: process.env.ANDROID_HOME || '/opt/android-sdk',
@@ -324,10 +268,47 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     const homeBwDir = path.join(process.env.HOME || '/root', '.bubblewrap');
     fs.mkdirSync(homeBwDir, { recursive: true });
     fs.writeFileSync(path.join(homeBwDir, 'config.json'), JSON.stringify(bwConfig, null, 2));
-    const localBwDir = path.join(appDir, '.bubblewrap');
-    fs.mkdirSync(localBwDir, { recursive: true });
-    fs.writeFileSync(path.join(localBwDir, 'config.json'), JSON.stringify(bwConfig, null, 2));
 
+    /* ── Étape 4 : bubblewrap init via script expect (non-interactif) ── */
+    _writeStatus(jobDir, { status: 'building', step: 4, message: '🔧 Génération du projet Android…', appName });
+
+    // On génère un script expect qui répond automatiquement à chaque question
+    // de bubblewrap init sans dépendance externe (expect est dispo sur Ubuntu)
+    const expectScript = `#!/usr/bin/expect -f
+set timeout 120
+spawn bubblewrap init --manifest="${manifestUrl}" --directory="${appDir}" --skipPwaValidation
+expect {
+  -re "Domain.*:" { send "${host}\r"; exp_continue }
+  -re "URL path.*:" { send "/\r"; exp_continue }
+  -re "Application name.*:" { send "${appName.replace(/"/g, '\\"')}\r"; exp_continue }
+  -re "short.*name.*:" { send "${(shortName || appName).slice(0,12).replace(/"/g, '\\"')}\r"; exp_continue }
+  -re "Application ID.*:" { send "${packageName}\r"; exp_continue }
+  -re "display.*mode.*:" { send "\r"; exp_continue }
+  -re "orientation.*:" { send "\r"; exp_continue }
+  -re "theme.*color.*:" { send "${themeColor || '#1a73e8'}\r"; exp_continue }
+  -re "background.*color.*:" { send "${bgColor || '#ffffff'}\r"; exp_continue }
+  -re "icon.*url.*:" { send "${iconUrl512}\r"; exp_continue }
+  -re "maskable.*icon.*:" { send "${iconUrl512}\r"; exp_continue }
+  -re "monochrome.*icon.*:" { send "\r"; exp_continue }
+  -re "version.*name.*:" { send "${versionName}\r"; exp_continue }
+  -re "version.*code.*:" { send "${versionCode}\r"; exp_continue }
+  -re "signing.*key.*path.*:" { send "${ksPath}\r"; exp_continue }
+  -re "signing.*key.*alias.*:" { send "${ksAlias}\r"; exp_continue }
+  -re "signing.*key.*password.*:" { send "${ksPassword}\r"; exp_continue }
+  -re "store.*password.*:" { send "${ksPassword}\r"; exp_continue }
+  -re "\\\\?" { send "\r"; exp_continue }
+  eof { exit 0 }
+  timeout { exit 1 }
+}
+`;
+    const expectScriptPath = path.join(jobDir, 'bw_init.expect');
+    fs.writeFileSync(expectScriptPath, expectScript);
+    fs.chmodSync(expectScriptPath, '755');
+
+    await run(`expect "${expectScriptPath}"`, jobDir, 180000);
+
+    /* ── Étape 5 : Bubblewrap build ── */
+    _writeStatus(jobDir, { status: 'building', step: 5, message: '⚙️ Compilation de l\'APK (2-5 min)…', appName });
     await run(`bubblewrap build --skipSigning`, appDir, 600000);
 
     /* ── Étape 6 : Signer l'APK avec apksigner ── */

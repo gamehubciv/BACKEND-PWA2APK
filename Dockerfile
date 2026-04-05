@@ -1,6 +1,5 @@
 # ═══════════════════════════════════════════════════════
 #  PWA2APK — Dockerfile Railway
-#  Base : eclipse-temurin (Java 17 officiel et fiable)
 # ═══════════════════════════════════════════════════════
 FROM eclipse-temurin:17-jdk-jammy
 
@@ -10,10 +9,10 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/34.0.0"
 
-# ── 1. Dépendances système (+ python3 et build-essential pour node-pty) ──
+# ── 1. Dépendances système (+ expect pour piloter bubblewrap) ──
 RUN apt-get update && apt-get install -y \
     curl wget unzip git ca-certificates gnupg \
-    python3 make g++ build-essential \
+    expect \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 2. Node 20 ───────────────────────────────────────
@@ -48,8 +47,8 @@ RUN mkdir -p /root/.bubblewrap \
     && printf '{\n  "jdkPath": "/opt/java/openjdk",\n  "androidSdkPath": "/opt/android-sdk"\n}\n' \
        > /root/.bubblewrap/config.json
 
-# ── 8. Vérifier bubblewrap ───────────────────────────
-RUN bubblewrap --version
+# ── 8. Vérifier bubblewrap et expect ─────────────────
+RUN bubblewrap --version && expect -v
 
 # ── 9. App Node.js ───────────────────────────────────
 WORKDIR /app
