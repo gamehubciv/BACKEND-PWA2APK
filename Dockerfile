@@ -1,6 +1,3 @@
-# ═══════════════════════════════════════════════════════
-#  PWA2APK — Dockerfile Railway
-# ═══════════════════════════════════════════════════════
 FROM eclipse-temurin:17-jdk-jammy
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -9,10 +6,9 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/34.0.0"
 
-# ── 1. Dépendances système (+ expect pour piloter bubblewrap) ──
+# ── 1. Dépendances système ───────────────────────────
 RUN apt-get update && apt-get install -y \
-    curl wget unzip git ca-certificates gnupg \
-    expect \
+    curl wget unzip git ca-certificates gnupg expect \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 2. Node 20 ───────────────────────────────────────
@@ -21,10 +17,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && node -v && npm -v
 
-# ── 3. Vérifier Java ─────────────────────────────────
+# ── 3. Java ──────────────────────────────────────────
 RUN java -version
 
-# ── 4. Android SDK Command-line Tools ───────────────
+# ── 4. Android SDK ───────────────────────────────────
 RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
     && wget -q https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip \
          -O /tmp/cmd.zip \
@@ -35,9 +31,7 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
 # ── 5. Licences + composants Android ────────────────
 RUN yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
 RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
-      "platform-tools" \
-      "platforms;android-34" \
-      "build-tools;34.0.0"
+      "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
 # ── 6. Bubblewrap CLI ────────────────────────────────
 RUN npm install -g @bubblewrap/cli@1.21.0
@@ -47,10 +41,10 @@ RUN mkdir -p /root/.bubblewrap \
     && printf '{\n  "jdkPath": "/opt/java/openjdk",\n  "androidSdkPath": "/opt/android-sdk"\n}\n' \
        > /root/.bubblewrap/config.json
 
-# ── 8. Vérifier bubblewrap et expect ─────────────────
+# ── 8. Vérification ──────────────────────────────────
 RUN bubblewrap --version && expect -v
 
-# ── 9. App Node.js ───────────────────────────────────
+# ── 9. App ───────────────────────────────────────────
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
