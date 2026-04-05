@@ -260,11 +260,10 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     const manifestUrl = cleanUrl + '/manifest.json';
     fs.mkdirSync(appDir, { recursive: true });
 
-    // CORRECTION : config bubblewrap avec sdkManagerPath explicite (requis par v1.21)
+    // S'assurer que le config bubblewrap est correct (jdkPath + androidSdkPath)
     const bwConfig = {
-      jdkPath: '/opt/java/openjdk',
-      androidSdkPath: '/opt/android-sdk',
-      sdkManagerPath: '/opt/android-sdk/cmdline-tools/latest/bin/sdkmanager',
+      jdkPath: process.env.JAVA_HOME || '/opt/java/openjdk',
+      androidSdkPath: process.env.ANDROID_HOME || '/opt/android-sdk',
     };
     const homeBwDir = path.join(process.env.HOME || '/root', '.bubblewrap');
     fs.mkdirSync(homeBwDir, { recursive: true });
@@ -307,6 +306,25 @@ expect {
     fs.chmodSync(expectScriptPath, '755');
 
     await run(`expect "${expectScriptPath}"`, jobDir, 180000);
+
+    /* ── Étape 4b : Vérifications post-init ── */
+    // Vérifier que bubblewrap init a bien généré twa-manifest.json
+    const twaManifest = path.join(appDir, 'twa-manifest.json');
+    if (!fs.existsSync(twaManifest)) {
+      throw new Error('bubblewrap init a échoué : twa-manifest.json introuvable dans ' + appDir);
+    }
+
+    // Écrire local.properties manuellement — Gradle en a besoin pour trouver le SDK.
+    // Si bubblewrap init l'a mal généré ou omis, le build plante avec "androidSdk isn't correct".
+    const androidSdkPath = process.env.ANDROID_HOME || '/opt/android-sdk';
+    const localProps = `sdk.dir=${androidSdkPath}\n`;
+    // Écrire dans appDir ET dans le sous-projet Gradle (appDir/app/) par sécurité
+    fs.writeFileSync(path.join(appDir, 'local.properties'), localProps);
+    const innerAppDir = path.join(appDir, 'app');
+    if (fs.existsSync(innerAppDir)) {
+      fs.writeFileSync(path.join(innerAppDir, 'local.properties'), localProps);
+    }
+    console.log('[Build] local.properties écrit dans', appDir, '(et sous-dossier app/ si présent)');
 
     /* ── Étape 5 : Bubblewrap build ── */
     _writeStatus(jobDir, { status: 'building', step: 5, message: '⚙️ Compilation de l\'APK (2-5 min)…', appName });
