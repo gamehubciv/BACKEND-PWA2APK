@@ -21,8 +21,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 RUN java -version
 
 # ── 4. Android SDK ───────────────────────────────────
+# CORRECTION : version 9477386 (r8) — bubblewrap 1.21 est incompatible avec cmdline-tools >10.x
 RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
-    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip \
+    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip \
          -O /tmp/cmd.zip \
     && unzip -q /tmp/cmd.zip -d /tmp/cmd \
     && mv /tmp/cmd/cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest \
@@ -33,12 +34,18 @@ RUN yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/
 RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
       "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
+# ── 5b. Vérification SDK (fail fast si le SDK est cassé) ──
+RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --version \
+    && ls ${ANDROID_HOME}/platforms/ \
+    && ls ${ANDROID_HOME}/build-tools/
+
 # ── 6. Bubblewrap CLI ────────────────────────────────
 RUN npm install -g @bubblewrap/cli@1.21.0
 
 # ── 7. Config Bubblewrap ─────────────────────────────
+# CORRECTION : sdkManagerPath explicite requis par bubblewrap 1.21
 RUN mkdir -p /root/.bubblewrap \
-    && printf '{\n  "jdkPath": "/opt/java/openjdk",\n  "androidSdkPath": "/opt/android-sdk"\n}\n' \
+    && printf '{\n  "jdkPath": "/opt/java/openjdk",\n  "androidSdkPath": "/opt/android-sdk",\n  "sdkManagerPath": "/opt/android-sdk/cmdline-tools/latest/bin/sdkmanager"\n}\n' \
        > /root/.bubblewrap/config.json
 
 # ── 8. Vérification ──────────────────────────────────

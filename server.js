@@ -260,10 +260,11 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     const manifestUrl = cleanUrl + '/manifest.json';
     fs.mkdirSync(appDir, { recursive: true });
 
-    // S'assurer que le config bubblewrap est correct (jdkPath + androidSdkPath)
+    // CORRECTION : config bubblewrap avec sdkManagerPath explicite (requis par v1.21)
     const bwConfig = {
-      jdkPath: process.env.JAVA_HOME || '/opt/java/openjdk',
-      androidSdkPath: process.env.ANDROID_HOME || '/opt/android-sdk',
+      jdkPath: '/opt/java/openjdk',
+      androidSdkPath: '/opt/android-sdk',
+      sdkManagerPath: '/opt/android-sdk/cmdline-tools/latest/bin/sdkmanager',
     };
     const homeBwDir = path.join(process.env.HOME || '/root', '.bubblewrap');
     fs.mkdirSync(homeBwDir, { recursive: true });
