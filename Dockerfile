@@ -8,7 +8,7 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${AN
 
 # ── 1. Dépendances système ───────────────────────────
 RUN apt-get update && apt-get install -y \
-    curl wget unzip git ca-certificates gnupg expect \
+    curl wget unzip git ca-certificates gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 2. Node 20 ───────────────────────────────────────
@@ -17,11 +17,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && node -v && npm -v
 
-# ── 3. Java ──────────────────────────────────────────
+# ── 3. Java (déjà fourni par eclipse-temurin) ────────
 RUN java -version
 
-# ── 4. Android SDK ───────────────────────────────────
-# CORRECTION : version 9477386 (r8) — bubblewrap 1.21 est incompatible avec cmdline-tools >10.x
+# ── 4. Android SDK cmdline-tools ─────────────────────
+# Version 9477386 (r8) obligatoire : bubblewrap 1.21 est incompatible avec les tools v10+
 RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
     && wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip \
          -O /tmp/cmd.zip \
@@ -29,12 +29,14 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
     && mv /tmp/cmd/cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest \
     && rm -rf /tmp/cmd /tmp/cmd.zip
 
-# ── 5. Licences + composants Android ────────────────
+# ── 5. Accepter licences + installer composants SDK ──
 RUN yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
 RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
-      "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+      "platform-tools" \
+      "platforms;android-34" \
+      "build-tools;34.0.0"
 
-# ── 5b. Vérification SDK (fail fast si le SDK est cassé) ──
+# ── 5b. Vérification SDK (fail fast si cassé) ────────
 RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --version \
     && ls ${ANDROID_HOME}/platforms/ \
     && ls ${ANDROID_HOME}/build-tools/
@@ -42,16 +44,17 @@ RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --version \
 # ── 6. Bubblewrap CLI ────────────────────────────────
 RUN npm install -g @bubblewrap/cli@1.21.0
 
-# ── 7. Config Bubblewrap ─────────────────────────────
-# CORRECTION : sdkManagerPath explicite requis par bubblewrap 1.21
+# ── 7. Config Bubblewrap (écrite une fois au build) ──
 RUN mkdir -p /root/.bubblewrap \
-    && printf '{\n  "jdkPath": "/opt/java/openjdk",\n  "androidSdkPath": "/opt/android-sdk",\n  "sdkManagerPath": "/opt/android-sdk/cmdline-tools/latest/bin/sdkmanager"\n}\n' \
-       > /root/.bubblewrap/config.json
+    && printf '{\n  "jdkPath": "%s",\n  "androidSdkPath": "%s",\n  "sdkManagerPath": "%s/cmdline-tools/latest/bin/sdkmanager"\n}\n' \
+       "${JAVA_HOME}" "${ANDROID_HOME}" "${ANDROID_HOME}" \
+       > /root/.bubblewrap/config.json \
+    && cat /root/.bubblewrap/config.json
 
-# ── 8. Vérification ──────────────────────────────────
-RUN bubblewrap --version && expect -v
+# ── 8. Vérification bubblewrap ───────────────────────
+RUN bubblewrap --version
 
-# ── 9. App ───────────────────────────────────────────
+# ── 9. App Node.js ───────────────────────────────────
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
