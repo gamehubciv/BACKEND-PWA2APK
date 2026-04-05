@@ -2,7 +2,7 @@
 const express  = require('express');
 const cors     = require('cors');
 const multer   = require('multer');
-const { exec } = require('child_process');
+const { exec, execSync } = require('child_process');
 const fs       = require('fs');
 const path     = require('path');
 const https    = require('https');
@@ -32,7 +32,7 @@ async function fetchManifest(pwaUrl) {
   return new Promise((resolve, reject) => {
     const url = new URL(pwaUrl);
     const get = url.protocol === 'https:' ? https.get : require('http').get;
-    get(pwaUrl, { headers: { 'User-Agent': 'PWA2APK/2.0' }, timeout: 15000 }, (res) => {
+    get(pwaUrl, { headers: { 'User-Agent': 'PWA2APK/3.0' }, timeout: 15000 }, (res) => {
       let html = '';
       res.on('data', d => html += d);
       res.on('end', () => {
@@ -40,7 +40,7 @@ async function fetchManifest(pwaUrl) {
                || html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']manifest["']/i);
         if (!m) return reject(new Error('Manifest link introuvable dans la page HTML'));
         const mUrl = m[1].startsWith('http') ? m[1] : new URL(m[1], pwaUrl).href;
-        get(mUrl, { headers: { 'User-Agent': 'PWA2APK/2.0' } }, (r2) => {
+        get(mUrl, { headers: { 'User-Agent': 'PWA2APK/3.0' } }, (r2) => {
           let json = '';
           r2.on('data', d => json += d);
           r2.on('end', () => {
@@ -71,30 +71,28 @@ function bestIcon(icons, baseUrl) {
   return ico.src.startsWith('http') ? ico.src : new URL(ico.src, baseUrl).href;
 }
 
+function findBuildTools() {
+  const btDir = path.join(ANDROID_HOME, 'build-tools');
+  if (!fs.existsSync(btDir)) return null;
+  const versions = fs.readdirSync(btDir).filter(v => /^\d/.test(v)).sort().reverse();
+  return versions.length ? path.join(btDir, versions[0]) : null;
+}
+
 function run(cmd, cwd, timeoutMs = 300000) {
   return new Promise((resolve, reject) => {
-    exec(cmd, {
-      cwd,
-      timeout: timeoutMs,
-      maxBuffer: 50 * 1024 * 1024,
-      env: {
-        ...process.env,
-        JAVA_HOME,
-        ANDROID_HOME,
-        ANDROID_SDK_ROOT: ANDROID_HOME,
-        // Variables d'env pour bypass les prompts de bubblewrap build
-        BUBBLEWRAP_KEYSTORE_PASSWORD: '',
-        BUBBLEWRAP_KEY_PASSWORD: '',
-        PATH: `${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/34.0.0:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
-      },
-    }, (err, stdout, stderr) => {
-      if (err) {
-        const msg = [stderr, stdout, err.message].filter(Boolean).join('\n').slice(0, 4000);
-        reject(new Error(`Command failed: ${cmd.slice(0, 80)}\n${msg}`));
-      } else {
-        resolve(stdout);
+    const env = {
+      ...process.env,
+      JAVA_HOME,
+      ANDROID_HOME,
+      ANDROID_SDK_ROOT: ANDROID_HOME,
+      PATH: `${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/34.0.0:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+    };
+    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 50 * 1024 * 1024, env },
+      (err, stdout, stderr) => {
+        if (err) reject(new Error(`Command failed: ${cmd.slice(0, 80)}\n${[stderr, stdout, err.message].filter(Boolean).join('\n').slice(0, 4000)}`));
+        else resolve(stdout);
       }
-    });
+    );
   });
 }
 
@@ -105,13 +103,6 @@ async function generateKeystore(dir, alias, password, dname) {
     dir
   );
   return ksPath;
-}
-
-function findBuildTools() {
-  const btDir = path.join(ANDROID_HOME, 'build-tools');
-  if (!fs.existsSync(btDir)) return null;
-  const versions = fs.readdirSync(btDir).filter(v => /^\d/.test(v)).sort().reverse();
-  return versions.length ? path.join(btDir, versions[0]) : null;
 }
 
 function writeBubblewrapConfig() {
@@ -135,7 +126,7 @@ app.get('/api/analyze', async (req, res) => {
     const { manifest, manifestUrl } = await fetchManifest(url);
     const domain = new URL(url).hostname;
     res.json({
-      ok:          true,
+      ok: true,
       appName:     manifest.name || manifest.short_name || domain,
       shortName:   manifest.short_name || manifest.name || domain,
       packageName: domainToPackage(domain),
@@ -178,8 +169,7 @@ app.get('/api/download/:jobId', (req, res) => {
   ];
   const file = candidates.find(p => fs.existsSync(p));
   if (!file) return res.status(404).json({ error: 'APK non trouvé' });
-  const statusFile = path.join(jobDir, 'status.json');
-  const status = fs.existsSync(statusFile) ? JSON.parse(fs.readFileSync(statusFile, 'utf8')) : {};
+  const status = (() => { try { return JSON.parse(fs.readFileSync(path.join(jobDir, 'status.json'), 'utf8')); } catch { return {}; } })();
   res.download(file, (status.appName || 'app').replace(/[^a-z0-9]/gi, '_') + '.apk');
 });
 
@@ -189,7 +179,7 @@ app.get('/api/keystore/:jobId', (req, res) => {
   res.download(f, 'release.keystore');
 });
 
-app.get('/health', (_, res) => res.json({ ok: true, version: '3.0.0' }));
+app.get('/health', (_, res) => res.json({ ok: true, version: '4.0.0' }));
 
 /* ══════════════════════════════════════════
    BUILD JOB
@@ -201,7 +191,6 @@ function _writeStatus(dir, data) {
 
 async function _buildJob(jobId, jobDir, body, keystoreFile) {
   body.pwaUrl = (body.pwaUrl || '').replace(/\/+$/, '');
-
   const {
     pwaUrl, appName, packageName,
     themeColor  = '#1a73e8',
@@ -217,13 +206,11 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
 
   try {
     /* ── Étape 1 : Validation ── */
-    _writeStatus(jobDir, { status: 'building', step: 1, message: '🔍 Validation des paramètres…', appName });
-    if (!pwaUrl || !appName || !packageName) throw new Error('Paramètres manquants : pwaUrl, appName, packageName requis');
-
+    _writeStatus(jobDir, { status: 'building', step: 1, message: '🔍 Validation…', appName });
+    if (!pwaUrl || !appName || !packageName) throw new Error('pwaUrl, appName, packageName requis');
     const host     = new URL(pwaUrl).hostname;
     const cleanUrl = pwaUrl.replace(/\/+$/, '');
 
-    // Récupérer l'icône
     let iconUrl = `${cleanUrl}/icon-512.png`;
     try {
       const { manifest: mf, manifestUrl: mUrl } = await fetchManifest(pwaUrl);
@@ -237,16 +224,13 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       ? keystoreFile.path
       : await generateKeystore(jobDir, ksAlias, ksPassword, ksDname);
 
-    /* ── Étape 3 : Config bubblewrap + twa-manifest.json ── */
-    _writeStatus(jobDir, { status: 'building', step: 3, message: '📦 Préparation du projet TWA…', appName });
-
+    /* ── Étape 3 : twa-manifest.json + bubblewrap update ── */
+    _writeStatus(jobDir, { status: 'building', step: 3, message: '📦 Génération du projet Android…', appName });
     writeBubblewrapConfig();
 
     const appDir = path.join(jobDir, 'app');
     fs.mkdirSync(appDir, { recursive: true });
 
-    // twa-manifest.json — format exact de bubblewrap 1.21
-    // Référence : https://github.com/GoogleChromeLabs/bubblewrap/blob/main/packages/core/src/lib/TwaManifest.ts
     const twaManifest = {
       packageId:                    packageName,
       host,
@@ -254,7 +238,7 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       launcherName:                 shortName,
       display:                      'standalone',
       orientation:                  'default',
-      themeColor:                   themeColor,
+      themeColor,
       themeColorDark:               themeColor,
       navigationColor:              themeColor,
       navigationColorDark:          '#000000',
@@ -268,10 +252,7 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       monochromeIconUrl:            '',
       appVersion:                   versionName,
       appVersionCode:               parseInt(versionCode, 10) || 1,
-      signingKey: {
-        path:  ksPath,
-        alias: ksAlias,
-      },
+      signingKey: { path: ksPath, alias: ksAlias },
       splashScreenFadeOutDuration:  300,
       enableSiteSettingsShortcut:   true,
       isChromeOSOnly:               false,
@@ -292,53 +273,36 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       hostName:                     host,
     };
 
-    fs.writeFileSync(
-      path.join(appDir, 'twa-manifest.json'),
-      JSON.stringify(twaManifest, null, 2)
-    );
+    fs.writeFileSync(path.join(appDir, 'twa-manifest.json'), JSON.stringify(twaManifest, null, 2));
 
-    // local.properties pour Gradle
+    // bubblewrap update — non-interactif, génère les fichiers Gradle
+    await run(`bubblewrap update --skipVersionUpgrade --manifest="${path.join(appDir, 'twa-manifest.json')}"`, appDir, 120000);
+
+    // Vérifier les fichiers Gradle
+    const missing = ['build.gradle', 'settings.gradle', 'gradlew'].filter(f => !fs.existsSync(path.join(appDir, f)));
+    if (missing.length) {
+      throw new Error(`bubblewrap update incomplet. Manquants: ${missing.join(', ')}. Présents: ${fs.readdirSync(appDir).join(', ')}`);
+    }
+
+    /* ── Étape 4 : Écrire local.properties APRÈS update ── */
+    _writeStatus(jobDir, { status: 'building', step: 4, message: '⚙️ Configuration Gradle…', appName });
     const localProps = `sdk.dir=${ANDROID_HOME}\n`;
-    fs.writeFileSync(path.join(appDir, 'local.properties'), localProps);
-
-    /* ── Étape 4 : bubblewrap update (génère les fichiers Gradle depuis twa-manifest.json) ── */
-    // "update" est NON-INTERACTIF contrairement à "init".
-    // Il régénère tout le projet Android depuis twa-manifest.json.
-    _writeStatus(jobDir, { status: 'building', step: 4, message: '🔧 Génération du projet Android (bubblewrap update)…', appName });
-
-    console.log('[Build] Lancement de bubblewrap update dans', appDir);
-    await run(
-      `bubblewrap update --skipVersionUpgrade --manifest="${path.join(appDir, "twa-manifest.json")}"`,
-      appDir,
-      120000
-    );
-
-    // Vérifier que les fichiers Gradle ont bien été générés
-    const gradleFiles = ['build.gradle', 'settings.gradle', 'gradlew'];
-    const missing = gradleFiles.filter(f => !fs.existsSync(path.join(appDir, f)));
-    if (missing.length > 0) {
-      const files = fs.readdirSync(appDir).join(', ');
-      throw new Error(
-        `bubblewrap update n'a pas généré les fichiers Gradle attendus (manquants: ${missing.join(', ')}). ` +
-        `Fichiers présents: ${files}`
-      );
+    // Écrire dans tous les dossiers possibles où Gradle peut le chercher
+    for (const d of [appDir, path.join(appDir, 'app'), jobDir]) {
+      if (fs.existsSync(d)) fs.writeFileSync(path.join(d, 'local.properties'), localProps);
     }
+    console.log('[Build] local.properties écrit dans', appDir);
 
-    // Réécrire local.properties après update (update peut le recréer incorrectement)
-    fs.writeFileSync(path.join(appDir, 'local.properties'), localProps);
-    const innerApp = path.join(appDir, 'app');
-    if (fs.existsSync(innerApp)) {
-      fs.writeFileSync(path.join(innerApp, 'local.properties'), localProps);
-    }
-
-    /* ── Étape 5 : bubblewrap build ── */
+    /* ── Étape 5 : Gradle directement (bypass bubblewrap build) ── */
+    // On appelle Gradle directement — bubblewrap build ne fait que ça en interne,
+    // mais il revalide le SDK avant, ce qui échoue dans notre environnement.
     _writeStatus(jobDir, { status: 'building', step: 5, message: '⚙️ Compilation Gradle (3-6 min)…', appName });
-    console.log('[Build] Lancement de bubblewrap build dans', appDir);
 
-    // BUBBLEWRAP_KEYSTORE_PASSWORD et BUBBLEWRAP_KEY_PASSWORD permettent
-    // de bypasser les prompts interactifs du build
+    const gradlew = path.join(appDir, 'gradlew');
+    fs.chmodSync(gradlew, '755');
+
     await run(
-      `BUBBLEWRAP_KEYSTORE_PASSWORD="${ksPassword}" BUBBLEWRAP_KEY_PASSWORD="${ksPassword}" bubblewrap build --skipSigning`,
+      `"${gradlew}" assembleRelease --no-daemon --stacktrace`,
       appDir,
       600000
     );
@@ -346,36 +310,37 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     /* ── Étape 6 : Signer l'APK ── */
     _writeStatus(jobDir, { status: 'building', step: 6, message: '✍️ Signature de l\'APK…', appName });
 
+    // Chercher l'APK généré par Gradle
     const apkCandidates = [
       path.join(appDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk'),
       path.join(appDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk'),
-      path.join(appDir, 'app-release-signed.apk'),
     ];
     const srcApk    = apkCandidates.find(p => fs.existsSync(p));
     const signedApk = path.join(jobDir, 'app-signed.apk');
 
-    if (srcApk) {
-      const btPath = findBuildTools();
-      if (btPath) {
-        await run(
-          `"${path.join(btPath, 'apksigner')}" sign --ks "${ksPath}" --ks-pass "pass:${ksPassword}" --ks-key-alias "${ksAlias}" --key-pass "pass:${ksPassword}" --out "${signedApk}" "${srcApk}"`,
-          jobDir
-        );
-        console.log('[Build] APK signé avec apksigner :', signedApk);
-      } else {
-        await run(
-          `jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore "${ksPath}" -storepass "${ksPassword}" -keypass "${ksPassword}" -signedjar "${signedApk}" "${srcApk}" "${ksAlias}"`,
-          jobDir
-        );
-        console.log('[Build] APK signé avec jarsigner :', signedApk);
-      }
+    if (!srcApk) {
+      // Lister tous les APKs générés pour debug
+      let found = '';
+      try { found = execSync(`find "${appDir}" -name "*.apk" 2>/dev/null`).toString(); } catch {}
+      throw new Error(`Aucun APK trouvé après Gradle. APKs détectés:\n${found || 'aucun'}`);
+    }
+
+    const btPath = findBuildTools();
+    if (btPath) {
+      await run(
+        `"${path.join(btPath, 'apksigner')}" sign --ks "${ksPath}" --ks-pass "pass:${ksPassword}" --ks-key-alias "${ksAlias}" --key-pass "pass:${ksPassword}" --out "${signedApk}" "${srcApk}"`,
+        jobDir
+      );
     } else {
-      console.warn('[Build] Aucun APK trouvé pour signature, on cherche un APK déjà signé...');
+      await run(
+        `jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore "${ksPath}" -storepass "${ksPassword}" -keypass "${ksPassword}" -signedjar "${signedApk}" "${srcApk}" "${ksAlias}"`,
+        jobDir
+      );
     }
 
     /* ── Étape 7 : Finalisation ── */
     fs.copyFileSync(ksPath, path.join(jobDir, 'release.keystore'));
-    _writeStatus(jobDir, { status: 'done', step: 7, message: '✅ APK prêt !', appName, jobId });
+    _writeStatus(jobDir, { status: 'done', step: 7, message: '✅ APK signé et prêt !', appName, jobId });
 
   } catch (err) {
     _writeStatus(jobDir, { status: 'error', message: err.message, appName });
@@ -389,12 +354,8 @@ setInterval(() => {
   const now = Date.now();
   fs.readdirSync(TMP).forEach(dir => {
     const full = path.join(TMP, dir);
-    try {
-      if (Date.now() - fs.statSync(full).mtimeMs > 7200000) {
-        fs.rmSync(full, { recursive: true, force: true });
-      }
-    } catch {}
+    try { if (now - fs.statSync(full).mtimeMs > 7200000) fs.rmSync(full, { recursive: true, force: true }); } catch {}
   });
 }, 1800000);
 
-app.listen(PORT, () => console.log(`✅ PWA2APK v3 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ PWA2APK v4 running on port ${PORT}`));
