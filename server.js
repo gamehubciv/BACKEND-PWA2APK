@@ -252,63 +252,71 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       ksPath = await generateKeystore(jobDir, ksAlias, ksPassword, ksDname);
     }
 
-    /* ── Étape 3 : Générer projet TWA avec Bubblewrap ── */
+    /* ── Étapes 3+4 : Générer projet TWA sans bubblewrap init (non-interactif) ── */
+    // bubblewrap init est interactif et ne peut pas être automatisé de façon fiable.
+    // On génère directement le twa-manifest.json + la structure Gradle qu'il aurait produite,
+    // puis on appelle `bubblewrap build` qui lui est entièrement non-interactif.
     _writeStatus(jobDir, { status: 'building', step: 3, message: '📦 Initialisation du projet TWA…', appName });
     const appDir = path.join(jobDir, 'app');
     fs.mkdirSync(appDir, { recursive: true });
 
-    // Créer le fichier de config twa-manifest.json pour Bubblewrap
+    const host     = new URL(pwaUrl).hostname;
+    const cleanUrl = pwaUrl.replace(/\/+$/, '');
+
+    // twa-manifest.json — format exact attendu par `bubblewrap build`
     const twaManifest = {
-      packageId: packageName,
-      host: new URL(pwaUrl).hostname,
-      name: appName,
-      launcherName: shortName || appName,
-      display: 'standalone',
-      orientation: 'default',
-      themeColor: themeColor || '#1a73e8',
-      navigationColor: themeColor || '#1a73e8',
-      navigationColorDark: themeColor || '#1a73e8',
-      navigationDividerColor: themeColor || '#1a73e8',
-      navigationDividerColorDark: themeColor || '#1a73e8',
-      backgroundColor: bgColor || '#ffffff',
-      startUrl: startUrl || '/',
-      iconUrl: iconUrl512,
-      maskableIconUrl: iconUrl512,
-      monochromeIconUrl: iconUrl512,
-      appVersion: versionName,
-      appVersionCode: parseInt(versionCode),
+      packageId:                   packageName,
+      host:                        host,
+      name:                        appName,
+      launcherName:                shortName || appName,
+      display:                     'standalone',
+      orientation:                 'default',
+      themeColor:                  themeColor || '#1a73e8',
+      navigationColor:             themeColor || '#1a73e8',
+      navigationColorDark:         themeColor || '#1a73e8',
+      navigationDividerColor:      themeColor || '#1a73e8',
+      navigationDividerColorDark:  themeColor || '#1a73e8',
+      backgroundColor:             bgColor || '#ffffff',
+      startUrl:                    startUrl || '/',
+      iconUrl:                     iconUrl512,
+      maskableIconUrl:             iconUrl512,
+      monochromeIconUrl:           iconUrl512,
+      appVersion:                  versionName,
+      appVersionCode:              parseInt(versionCode),
       signingKey: {
-        path: ksPath,
+        path:  ksPath,
         alias: ksAlias,
       },
-      signingKeyPassphrase: ksPassword,
-      storeKeyPassphrase: ksPassword,
-      minSdkVersion: 21,
-      targetSdkVersion: 34,
-      retainedBundles: [],
-      enableNotifications: false,
-      shortcuts: [],
-      generatorApp: 'pwa2apk',
-      webManifestUrl: `${pwaUrl.replace(/\/+$/, '')}/manifest.json`,
-      fallbackType: 'customtabs',
-      features: { locationDelegation: { enabled: true }, playBilling: { enabled: false } },
-      alphaDependencies: { enabled: false },
+      signingKeyPassphrase:    ksPassword,
+      storeKeyPassphrase:      ksPassword,
+      minSdkVersion:           21,
+      targetSdkVersion:        34,
+      retainedBundles:         [],
+      enableNotifications:     false,
+      shortcuts:               [],
+      generatorApp:            'pwa2apk',
+      webManifestUrl:          `${cleanUrl}/manifest.json`,
+      fallbackType:            'customtabs',
+      features: {
+        locationDelegation: { enabled: true },
+        playBilling:        { enabled: false },
+      },
+      alphaDependencies:          { enabled: false },
       enableSiteSettingsShortcut: true,
-      isChromeOSOnly: false,
-      isMetaQuest: false,
-      fullyImmersive: false,
-      pwaUrl: pwaUrl,
+      isChromeOSOnly:             false,
+      isMetaQuest:                false,
+      fullyImmersive:             false,
     };
 
     fs.writeFileSync(path.join(appDir, 'twa-manifest.json'), JSON.stringify(twaManifest, null, 2));
 
-    /* ── Étape 4 : Bubblewrap init (non-interactif via twa-manifest.json) ── */
+    /* ── Étape 4 : Générer le projet Android via bubblewrap update ── */
+    // `bubblewrap update` lit le twa-manifest.json et génère/met à jour les fichiers
+    // Gradle sans jamais poser de questions interactives.
     _writeStatus(jobDir, { status: 'building', step: 4, message: '🔧 Génération du projet Android…', appName });
-    // --twa-manifest pointe sur le fichier JSON déjà construit : zéro question interactive.
-    const twaManifestPath = path.join(appDir, 'twa-manifest.json');
     await run(
-      `bubblewrap init --twa-manifest="${twaManifestPath}" --directory="${appDir}" --skipPwaValidation`,
-      jobDir,
+      `bubblewrap update`,
+      appDir,
       180000
     );
 
