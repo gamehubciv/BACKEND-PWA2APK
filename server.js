@@ -78,7 +78,7 @@ function findBuildTools() {
   return versions.length ? path.join(btDir, versions[0]) : null;
 }
 
-function run(cmd, cwd, timeoutMs = 300000) {
+function run(cmd, cwd, timeoutMs = 300000, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
@@ -86,6 +86,7 @@ function run(cmd, cwd, timeoutMs = 300000) {
       ANDROID_HOME,
       ANDROID_SDK_ROOT: ANDROID_HOME,
       PATH: `${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/34.0.0:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      ...extraEnv,
     };
     exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 50 * 1024 * 1024, env },
       (err, stdout, stderr) => {
@@ -294,17 +295,44 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     console.log('[Build] local.properties écrit dans', appDir);
 
     /* ── Étape 5 : Gradle directement (bypass bubblewrap build) ── */
-    // On appelle Gradle directement — bubblewrap build ne fait que ça en interne,
-    // mais il revalide le SDK avant, ce qui échoue dans notre environnement.
     _writeStatus(jobDir, { status: 'building', step: 5, message: '⚙️ Compilation Gradle (3-6 min)…', appName });
 
     const gradlew = path.join(appDir, 'gradlew');
     fs.chmodSync(gradlew, '755');
 
+    // Railway free tier = 512 MB RAM total.
+    // Node.js prend ~100 MB → Gradle ne peut pas dépasser ~380 MB.
+    // On désactive le daemon, on force un seul worker, on bride la JVM au maximum.
+    const gradleProps = [
+      'org.gradle.daemon=false',
+      'org.gradle.jvmargs=-Xmx256m -Xms64m -XX:MaxMetaspaceSize=128m -XX:+TieredCompilation -XX:TieredStopAtLevel=1',
+      'org.gradle.parallel=false',
+      'org.gradle.workers.max=1',
+      'org.gradle.configureondemand=false',
+      'org.gradle.caching=false',
+      'android.useAndroidX=true',
+      'android.enableJetifier=true',
+      'android.enableR8.fullMode=false',
+      'kotlin.incremental=false',
+    ].join('\n') + '\n';
+
+    // Écrire gradle.properties à la racine du projet ET dans app/
+    fs.writeFileSync(path.join(appDir, 'gradle.properties'), gradleProps);
+    if (fs.existsSync(path.join(appDir, 'app'))) {
+      fs.writeFileSync(path.join(appDir, 'app', 'gradle.properties'), gradleProps);
+    }
+
+    const gradleEnv = {
+      GRADLE_OPTS: '-Xmx256m -Xms64m -XX:MaxMetaspaceSize=128m',
+      JAVA_TOOL_OPTIONS: '-Xmx256m -Xms64m',
+      _JAVA_OPTIONS: '-Xmx256m',
+    };
+
     await run(
-      `"${gradlew}" assembleRelease --no-daemon --stacktrace`,
+      `"${gradlew}" assembleRelease --no-daemon --no-parallel --max-workers=1 --no-build-cache`,
       appDir,
-      600000
+      720000,
+      gradleEnv
     );
 
     /* ── Étape 6 : Signer l'APK ── */
