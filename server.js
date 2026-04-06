@@ -136,7 +136,7 @@ function buildGradleProps() {
   return [
     '# Railway free tier 512MB: Xmx320m + Metaspace256m + no daemon',
     'org.gradle.daemon=false',
-    'org.gradle.jvmargs=-Xmx320m -Xms64m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8',
+    'org.gradle.jvmargs=-Xmx420m -Xms64m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8',
     'org.gradle.parallel=false',
     'org.gradle.workers.max=1',
     'org.gradle.configureondemand=false',
@@ -355,21 +355,68 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     const gradlew = path.join(appDir, 'gradlew');
     fs.chmodSync(gradlew, '755');
 
-    // Variables d'env pour contraindre la mémoire JVM
-    // Railway free = 512 MB total. Node ~80MB, reste ~430MB pour Gradle+R8
-    // R8 désactivé → Gradle seul tourne en ~350MB confortablement
-    const gradleEnv = {
-      GRADLE_OPTS:       '-Xmx320m -Xms64m -XX:MaxMetaspaceSize=256m',
-      JAVA_TOOL_OPTIONS: '-Xmx320m -Xms64m',
-      _JAVA_OPTIONS:     '-Xmx320m',
-    };
+    // Patcher gradle-wrapper.properties pour utiliser le Gradle pré-installé dans l'image
+    // Évite le téléchargement de 150MB à chaque build
+    const wrapperProps = path.join(appDir, 'gradle', 'wrapper', 'gradle-wrapper.properties');
+    if (fs.existsSync(wrapperProps)) {
+      let wProps = fs.readFileSync(wrapperProps, 'utf8');
+      // Vérifier si Gradle est déjà dans l'image Docker
+      const gradleDistDir = '/root/.gradle/wrapper/dists/gradle-8.11.1-bin';
+      if (fs.existsSync(gradleDistDir)) {
+        // Trouver le dossier exact avec le hash (gradle-8.11.1-bin/<hash>/gradle-8.11.1/)
+        const hashDirs = fs.readdirSync(gradleDistDir).filter(d => fs.statSync(path.join(gradleDistDir, d)).isDirectory());
+        if (hashDirs.length > 0) {
+          const gradleHome = path.join(gradleDistDir, hashDirs[0], 'gradle-8.11.1');
+          if (fs.existsSync(gradleHome)) {
+            // Forcer le wrapper à utiliser l'installation locale
+            wProps = wProps.replace(/distributionUrl=.+/g, `distributionUrl=file\://${gradleDistDir}/../../../gradle-8.11.1-bin.zip`);
+            fs.writeFileSync(wrapperProps, wProps);
+            console.log('[Build] gradle-wrapper.properties patché pour utiliser Gradle local');
+          }
+        }
+      }
+      console.log('[Build] gradle-wrapper.properties:', wProps.trim());
+    }
 
-    await run(
-      `"${gradlew}" assembleRelease --no-daemon --no-parallel --max-workers=1 --no-build-cache`,
-      appDir,
-      900000, // 15 min max — le plan gratuit est lent
-      gradleEnv
-    );
+    // Sur Railway free (512MB), Gradle 8 fork toujours un sous-processus JVM
+    // même avec --no-daemon. La seule solution est de lui donner toute la RAM
+    // disponible en libérant Node.js via --max-old-space-size minimal.
+    //
+    // Stratégie : on lance gradlew via un script shell wrapper qui
+    // pre-alloue la mémoire correctement AVANT que Gradle fork son daemon.
+    // On utilise JAVA_OPTS (pas GRADLE_OPTS) car c'est ce que gradlew lit
+    // pour configurer le JVM du PROCESSUS PRINCIPAL (pas du daemon forké).
+
+    // Écrire un wrapper shell qui définit JAVA_OPTS avant d'appeler gradlew
+    const wrapperScript = path.join(appDir, 'build_apk.sh');
+    fs.writeFileSync(wrapperScript, `#!/bin/bash
+set -e
+export JAVA_HOME="${JAVA_HOME}"
+export ANDROID_HOME="${ANDROID_HOME}"
+export ANDROID_SDK_ROOT="${ANDROID_HOME}"
+export GRADLE_OPTS="-Xmx420m -Xms64m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8"
+export JAVA_TOOL_OPTIONS="-Xmx420m -Xms64m -XX:MaxMetaspaceSize=256m"
+export _JAVA_OPTIONS="-Xmx420m"
+unset JAVA_OPTS
+cd "${appDir}"
+exec "${gradlew}" assembleRelease \
+  --no-daemon \
+  --no-parallel \
+  --max-workers=1 \
+  --no-build-cache \
+  --no-configuration-cache
+`);
+    fs.chmodSync(wrapperScript, '755');
+
+    // Forcer Node.js à libérer le maximum de mémoire GC avant le build
+    if (global.gc) { global.gc(); }
+
+    await run(wrapperScript, appDir, 900000, {
+      GRADLE_OPTS:       '-Xmx420m -Xms64m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8',
+      JAVA_TOOL_OPTIONS: '-Xmx420m -Xms64m',
+      _JAVA_OPTIONS:     '-Xmx420m',
+      JAVA_OPTS:         '-Xmx420m -Xms64m -XX:MaxMetaspaceSize=256m',
+    });
 
     /* ── Étape 6 : Trouver et signer l'APK ── */
     _writeStatus(jobDir, { status: 'building', step: 6, message: '✍️ Signature de l\'APK…', appName });
