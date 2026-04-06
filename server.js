@@ -1,12 +1,12 @@
 'use strict';
-const express  = require('express');
-const cors     = require('cors');
-const multer   = require('multer');
+const express        = require('express');
+const cors           = require('cors');
+const multer         = require('multer');
 const { exec, execSync } = require('child_process');
-const fs       = require('fs');
-const path     = require('path');
-const https    = require('https');
-const crypto   = require('crypto');
+const fs             = require('fs');
+const path           = require('path');
+const https          = require('https');
+const crypto         = require('crypto');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -32,7 +32,11 @@ async function fetchManifest(pwaUrl) {
   return new Promise((resolve, reject) => {
     const url = new URL(pwaUrl);
     const get = url.protocol === 'https:' ? https.get : require('http').get;
-    get(pwaUrl, { headers: { 'User-Agent': 'PWA2APK/3.0' }, timeout: 15000 }, (res) => {
+    get(pwaUrl, { headers: { 'User-Agent': 'PWA2APK/4.0' }, timeout: 15000 }, (res) => {
+      // Suivre les redirections
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return fetchManifest(res.headers.location).then(resolve).catch(reject);
+      }
       let html = '';
       res.on('data', d => html += d);
       res.on('end', () => {
@@ -40,7 +44,10 @@ async function fetchManifest(pwaUrl) {
                || html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']manifest["']/i);
         if (!m) return reject(new Error('Manifest link introuvable dans la page HTML'));
         const mUrl = m[1].startsWith('http') ? m[1] : new URL(m[1], pwaUrl).href;
-        get(mUrl, { headers: { 'User-Agent': 'PWA2APK/3.0' } }, (r2) => {
+        get(mUrl, { headers: { 'User-Agent': 'PWA2APK/4.0' } }, (r2) => {
+          if (r2.statusCode >= 300 && r2.statusCode < 400 && r2.headers.location) {
+            return fetchManifest(r2.headers.location).then(resolve).catch(reject);
+          }
           let json = '';
           r2.on('data', d => json += d);
           r2.on('end', () => {
@@ -71,6 +78,7 @@ function bestIcon(icons, baseUrl) {
   return ico.src.startsWith('http') ? ico.src : new URL(ico.src, baseUrl).href;
 }
 
+// Trouver la version de build-tools la plus récente disponible
 function findBuildTools() {
   const btDir = path.join(ANDROID_HOME, 'build-tools');
   if (!fs.existsSync(btDir)) return null;
@@ -80,18 +88,24 @@ function findBuildTools() {
 
 function run(cmd, cwd, timeoutMs = 300000, extraEnv = {}) {
   return new Promise((resolve, reject) => {
+    const btPath = findBuildTools() || `${ANDROID_HOME}/build-tools/35.0.0`;
     const env = {
       ...process.env,
       JAVA_HOME,
       ANDROID_HOME,
       ANDROID_SDK_ROOT: ANDROID_HOME,
-      PATH: `${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/build-tools/34.0.0:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      PATH: `${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${btPath}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       ...extraEnv,
     };
-    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 50 * 1024 * 1024, env },
+    console.log(`[run] ${cmd.slice(0, 120)}`);
+    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 100 * 1024 * 1024, env },
       (err, stdout, stderr) => {
-        if (err) reject(new Error(`Command failed: ${cmd.slice(0, 80)}\n${[stderr, stdout, err.message].filter(Boolean).join('\n').slice(0, 4000)}`));
-        else resolve(stdout);
+        if (err) {
+          const msg = [stderr, stdout, err.message].filter(Boolean).join('\n').slice(0, 5000);
+          reject(new Error(`Command failed: ${cmd.slice(0, 80)}\n${msg}`));
+        } else {
+          resolve(stdout);
+        }
       }
     );
   });
@@ -116,6 +130,27 @@ function writeBubblewrapConfig() {
   }, null, 2));
 }
 
+// gradle.properties optimisé pour Railway free tier (512 MB RAM)
+// R8 est désactivé car il nécessite trop de mémoire heap
+function buildGradleProps() {
+  return [
+    '# Optimisé pour Railway free tier (512 MB RAM)',
+    'org.gradle.daemon=false',
+    'org.gradle.jvmargs=-Xmx384m -Xms64m -XX:MaxMetaspaceSize=128m -XX:+TieredCompilation -XX:TieredStopAtLevel=1 -Dfile.encoding=UTF-8',
+    'org.gradle.parallel=false',
+    'org.gradle.workers.max=1',
+    'org.gradle.configureondemand=false',
+    'org.gradle.caching=false',
+    'android.useAndroidX=true',
+    'android.enableJetifier=true',
+    // Désactiver R8/ProGuard — trop gourmand en mémoire
+    'android.enableR8=false',
+    'android.enableR8.fullMode=false',
+    'kotlin.incremental=false',
+    'kotlin.daemon.jvm.options=-Xmx256m',
+  ].join('\n') + '\n';
+}
+
 /* ══════════════════════════════════════════
    ROUTES
 ══════════════════════════════════════════ */
@@ -127,7 +162,7 @@ app.get('/api/analyze', async (req, res) => {
     const { manifest, manifestUrl } = await fetchManifest(url);
     const domain = new URL(url).hostname;
     res.json({
-      ok: true,
+      ok:          true,
       appName:     manifest.name || manifest.short_name || domain,
       shortName:   manifest.short_name || manifest.name || domain,
       packageName: domainToPackage(domain),
@@ -180,7 +215,7 @@ app.get('/api/keystore/:jobId', (req, res) => {
   res.download(f, 'release.keystore');
 });
 
-app.get('/health', (_, res) => res.json({ ok: true, version: '4.0.0' }));
+app.get('/health', (_, res) => res.json({ ok: true, version: '5.0.0' }));
 
 /* ══════════════════════════════════════════
    BUILD JOB
@@ -207,7 +242,7 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
 
   try {
     /* ── Étape 1 : Validation ── */
-    _writeStatus(jobDir, { status: 'building', step: 1, message: '🔍 Validation…', appName });
+    _writeStatus(jobDir, { status: 'building', step: 1, message: '🔍 Validation des paramètres…', appName });
     if (!pwaUrl || !appName || !packageName) throw new Error('pwaUrl, appName, packageName requis');
     const host     = new URL(pwaUrl).hostname;
     const cleanUrl = pwaUrl.replace(/\/+$/, '');
@@ -217,7 +252,7 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       const { manifest: mf, manifestUrl: mUrl } = await fetchManifest(pwaUrl);
       const best = bestIcon(mf.icons || [], mUrl);
       if (best) iconUrl = best;
-    } catch(e) { console.warn('[Build] Icône:', e.message); }
+    } catch(e) { console.warn('[Build] Icône non récupérée:', e.message); }
 
     /* ── Étape 2 : Keystore ── */
     _writeStatus(jobDir, { status: 'building', step: 2, message: '🔑 Génération du keystore…', appName });
@@ -225,16 +260,18 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       ? keystoreFile.path
       : await generateKeystore(jobDir, ksAlias, ksPassword, ksDname);
 
-    /* ── Étape 3 : twa-manifest.json + bubblewrap update ── */
+    /* ── Étape 3 : Générer le projet Android via bubblewrap update ── */
     _writeStatus(jobDir, { status: 'building', step: 3, message: '📦 Génération du projet Android…', appName });
     writeBubblewrapConfig();
 
     const appDir = path.join(jobDir, 'app');
     fs.mkdirSync(appDir, { recursive: true });
 
+    // twa-manifest.json — format exact de bubblewrap 1.21
     const twaManifest = {
       packageId:                    packageName,
       host,
+      hostName:                     host,
       name:                         appName,
       launcherName:                 shortName,
       display:                      'standalone',
@@ -248,12 +285,13 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       backgroundColor:              bgColor,
       enableNotifications:          false,
       startUrl:                     startUrl || '/',
+      launchUrl:                    startUrl || '/',
       iconUrl,
       maskableIconUrl:              iconUrl,
       monochromeIconUrl:            '',
       appVersion:                   versionName,
       appVersionCode:               parseInt(versionCode, 10) || 1,
-      signingKey: { path: ksPath, alias: ksAlias },
+      signingKey:                   { path: ksPath, alias: ksAlias },
       splashScreenFadeOutDuration:  300,
       enableSiteSettingsShortcut:   true,
       isChromeOSOnly:               false,
@@ -270,75 +308,75 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       webManifestUrl:               `${cleanUrl}/manifest.json`,
       fallbackType:                 'customtabs',
       shareTarget:                  null,
-      launchUrl:                    startUrl || '/',
-      hostName:                     host,
     };
 
     fs.writeFileSync(path.join(appDir, 'twa-manifest.json'), JSON.stringify(twaManifest, null, 2));
 
-    // bubblewrap update — non-interactif, génère les fichiers Gradle
-    await run(`bubblewrap update --skipVersionUpgrade --manifest="${path.join(appDir, 'twa-manifest.json')}"`, appDir, 120000);
+    // bubblewrap update — non-interactif, génère les fichiers Gradle depuis twa-manifest.json
+    await run(
+      `bubblewrap update --skipVersionUpgrade --manifest="${path.join(appDir, 'twa-manifest.json')}"`,
+      appDir,
+      180000
+    );
 
-    // Vérifier les fichiers Gradle
-    const missing = ['build.gradle', 'settings.gradle', 'gradlew'].filter(f => !fs.existsSync(path.join(appDir, f)));
-    if (missing.length) {
-      throw new Error(`bubblewrap update incomplet. Manquants: ${missing.join(', ')}. Présents: ${fs.readdirSync(appDir).join(', ')}`);
+    // Vérifier que les fichiers Gradle essentiels ont été générés
+    const missingFiles = ['build.gradle', 'settings.gradle', 'gradlew'].filter(f => !fs.existsSync(path.join(appDir, f)));
+    if (missingFiles.length) {
+      throw new Error(`bubblewrap update incomplet. Manquants: ${missingFiles.join(', ')}. Présents: ${fs.readdirSync(appDir).join(', ')}`);
     }
 
-    /* ── Étape 4 : Écrire local.properties APRÈS update ── */
+    /* ── Étape 4 : Écrire local.properties + gradle.properties ── */
     _writeStatus(jobDir, { status: 'building', step: 4, message: '⚙️ Configuration Gradle…', appName });
-    const localProps = `sdk.dir=${ANDROID_HOME}\n`;
-    // Écrire dans tous les dossiers possibles où Gradle peut le chercher
-    for (const d of [appDir, path.join(appDir, 'app'), jobDir]) {
-      if (fs.existsSync(d)) fs.writeFileSync(path.join(d, 'local.properties'), localProps);
-    }
-    console.log('[Build] local.properties écrit dans', appDir);
 
-    /* ── Étape 5 : Gradle directement (bypass bubblewrap build) ── */
-    _writeStatus(jobDir, { status: 'building', step: 5, message: '⚙️ Compilation Gradle (3-6 min)…', appName });
+    const localProps  = `sdk.dir=${ANDROID_HOME}\n`;
+    const gradleProps = buildGradleProps();
+
+    // Écrire dans tous les dossiers Gradle (racine + sous-module app/)
+    for (const d of [appDir, path.join(appDir, 'app')]) {
+      if (fs.existsSync(d)) {
+        fs.writeFileSync(path.join(d, 'local.properties'),  localProps);
+        fs.writeFileSync(path.join(d, 'gradle.properties'), gradleProps);
+      }
+    }
+
+    // Désactiver R8/minification dans le build.gradle de l'app Android
+    // en injectant minifyEnabled false et shrinkResources false
+    const appBuildGradle = path.join(appDir, 'app', 'build.gradle');
+    if (fs.existsSync(appBuildGradle)) {
+      let gradleContent = fs.readFileSync(appBuildGradle, 'utf8');
+      // Remplacer minifyEnabled true → false
+      gradleContent = gradleContent.replace(/minifyEnabled\s+true/g, 'minifyEnabled false');
+      // Remplacer shrinkResources true → false
+      gradleContent = gradleContent.replace(/shrinkResources\s+true/g, 'shrinkResources false');
+      fs.writeFileSync(appBuildGradle, gradleContent);
+      console.log('[Build] R8/minification désactivée dans app/build.gradle');
+    }
+
+    /* ── Étape 5 : Compilation Gradle ── */
+    _writeStatus(jobDir, { status: 'building', step: 5, message: '⚙️ Compilation APK (5-10 min sur plan gratuit)…', appName });
 
     const gradlew = path.join(appDir, 'gradlew');
     fs.chmodSync(gradlew, '755');
 
-    // Railway free tier = 512 MB RAM total.
-    // Node.js prend ~100 MB → Gradle ne peut pas dépasser ~380 MB.
-    // On désactive le daemon, on force un seul worker, on bride la JVM au maximum.
-    const gradleProps = [
-      'org.gradle.daemon=false',
-      'org.gradle.jvmargs=-Xmx256m -Xms64m -XX:MaxMetaspaceSize=128m -XX:+TieredCompilation -XX:TieredStopAtLevel=1',
-      'org.gradle.parallel=false',
-      'org.gradle.workers.max=1',
-      'org.gradle.configureondemand=false',
-      'org.gradle.caching=false',
-      'android.useAndroidX=true',
-      'android.enableJetifier=true',
-      'android.enableR8.fullMode=false',
-      'kotlin.incremental=false',
-    ].join('\n') + '\n';
-
-    // Écrire gradle.properties à la racine du projet ET dans app/
-    fs.writeFileSync(path.join(appDir, 'gradle.properties'), gradleProps);
-    if (fs.existsSync(path.join(appDir, 'app'))) {
-      fs.writeFileSync(path.join(appDir, 'app', 'gradle.properties'), gradleProps);
-    }
-
+    // Variables d'env pour contraindre la mémoire JVM
+    // Railway free = 512 MB total. Node ~80MB, reste ~430MB pour Gradle+R8
+    // R8 désactivé → Gradle seul tourne en ~350MB confortablement
     const gradleEnv = {
-      GRADLE_OPTS: '-Xmx256m -Xms64m -XX:MaxMetaspaceSize=128m',
-      JAVA_TOOL_OPTIONS: '-Xmx256m -Xms64m',
-      _JAVA_OPTIONS: '-Xmx256m',
+      GRADLE_OPTS:       '-Xmx384m -Xms64m -XX:MaxMetaspaceSize=128m',
+      JAVA_TOOL_OPTIONS: '-Xmx384m -Xms64m',
+      _JAVA_OPTIONS:     '-Xmx384m',
     };
 
     await run(
       `"${gradlew}" assembleRelease --no-daemon --no-parallel --max-workers=1 --no-build-cache`,
       appDir,
-      720000,
+      900000, // 15 min max — le plan gratuit est lent
       gradleEnv
     );
 
-    /* ── Étape 6 : Signer l'APK ── */
+    /* ── Étape 6 : Trouver et signer l'APK ── */
     _writeStatus(jobDir, { status: 'building', step: 6, message: '✍️ Signature de l\'APK…', appName });
 
-    // Chercher l'APK généré par Gradle
     const apkCandidates = [
       path.join(appDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk'),
       path.join(appDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk'),
@@ -347,31 +385,35 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     const signedApk = path.join(jobDir, 'app-signed.apk');
 
     if (!srcApk) {
-      // Lister tous les APKs générés pour debug
       let found = '';
-      try { found = execSync(`find "${appDir}" -name "*.apk" 2>/dev/null`).toString(); } catch {}
-      throw new Error(`Aucun APK trouvé après Gradle. APKs détectés:\n${found || 'aucun'}`);
+      try { found = execSync(`find "${appDir}" -name "*.apk" 2>/dev/null`).toString().trim(); } catch {}
+      throw new Error(`Aucun APK trouvé après la compilation.\nAPKs détectés: ${found || 'aucun'}`);
     }
 
     const btPath = findBuildTools();
-    if (btPath) {
+    if (btPath && fs.existsSync(path.join(btPath, 'apksigner'))) {
       await run(
         `"${path.join(btPath, 'apksigner')}" sign --ks "${ksPath}" --ks-pass "pass:${ksPassword}" --ks-key-alias "${ksAlias}" --key-pass "pass:${ksPassword}" --out "${signedApk}" "${srcApk}"`,
         jobDir
       );
+      console.log('[Build] APK signé avec apksigner ✅');
     } else {
+      // Fallback : jarsigner (toujours dispo avec le JDK)
       await run(
-        `jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore "${ksPath}" -storepass "${ksPassword}" -keypass "${ksPassword}" -signedjar "${signedApk}" "${srcApk}" "${ksAlias}"`,
+        `"${JAVA_HOME}/bin/jarsigner" -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore "${ksPath}" -storepass "${ksPassword}" -keypass "${ksPassword}" -signedjar "${signedApk}" "${srcApk}" "${ksAlias}"`,
         jobDir
       );
+      console.log('[Build] APK signé avec jarsigner ✅');
     }
 
     /* ── Étape 7 : Finalisation ── */
     fs.copyFileSync(ksPath, path.join(jobDir, 'release.keystore'));
-    _writeStatus(jobDir, { status: 'done', step: 7, message: '✅ APK signé et prêt !', appName, jobId });
+    _writeStatus(jobDir, { status: 'done', step: 7, message: '✅ APK signé et prêt à télécharger !', appName, jobId });
+    console.log('[Build] ✅ Job', jobId, 'terminé avec succès');
 
   } catch (err) {
     _writeStatus(jobDir, { status: 'error', message: err.message, appName });
+    console.error('[Build] ❌ Job', jobId, 'échoué:', err.message.slice(0, 300));
     throw err;
   }
 }
@@ -386,4 +428,4 @@ setInterval(() => {
   });
 }, 1800000);
 
-app.listen(PORT, () => console.log(`✅ PWA2APK v4 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ PWA2APK v5 running on port ${PORT}`));
