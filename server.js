@@ -134,18 +134,17 @@ function writeBubblewrapConfig() {
 // R8 est désactivé car il nécessite trop de mémoire heap
 function buildGradleProps() {
   return [
-    '# Optimisé pour Railway free tier (512 MB RAM)',
+    '# Railway free tier 512MB: Xmx320m + Metaspace256m + no daemon',
     'org.gradle.daemon=false',
-    'org.gradle.jvmargs=-Xmx384m -Xms64m -XX:MaxMetaspaceSize=128m -XX:+TieredCompilation -XX:TieredStopAtLevel=1 -Dfile.encoding=UTF-8',
+    'org.gradle.jvmargs=-Xmx320m -Xms64m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8',
     'org.gradle.parallel=false',
     'org.gradle.workers.max=1',
     'org.gradle.configureondemand=false',
     'org.gradle.caching=false',
     'android.useAndroidX=true',
     'android.enableJetifier=true',
-    // android.enableR8 supprimé depuis AGP 7.0 — on désactive via build.gradle uniquement
     'kotlin.incremental=false',
-    'kotlin.daemon.jvm.options=-Xmx256m',
+    'kotlin.daemon.jvm.options=-Xmx128m',
   ].join('\n') + '\n';
 }
 
@@ -360,9 +359,9 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
     // Railway free = 512 MB total. Node ~80MB, reste ~430MB pour Gradle+R8
     // R8 désactivé → Gradle seul tourne en ~350MB confortablement
     const gradleEnv = {
-      GRADLE_OPTS:       '-Xmx384m -Xms64m -XX:MaxMetaspaceSize=128m',
-      JAVA_TOOL_OPTIONS: '-Xmx384m -Xms64m',
-      _JAVA_OPTIONS:     '-Xmx384m',
+      GRADLE_OPTS:       '-Xmx320m -Xms64m -XX:MaxMetaspaceSize=256m',
+      JAVA_TOOL_OPTIONS: '-Xmx320m -Xms64m',
+      _JAVA_OPTIONS:     '-Xmx320m',
     };
 
     await run(
