@@ -259,7 +259,7 @@ async function _buildJob(jobId, jobDir, body, keystoreFile) {
       isChromeOSOnly:               false,
       isMetaQuest:                  false,
       fullScopeUrl:                 `https://${host}/`,
-      minSdkVersion:                19,
+      minSdkVersion:                21,
       targetSdkVersion:             34,
       generatorApp:                 'bubblewrap-cli',
       generatorAppVersion:          '1.21.0',
