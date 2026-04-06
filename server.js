@@ -143,9 +143,7 @@ function buildGradleProps() {
     'org.gradle.caching=false',
     'android.useAndroidX=true',
     'android.enableJetifier=true',
-    // Désactiver R8/ProGuard — trop gourmand en mémoire
-    'android.enableR8=false',
-    'android.enableR8.fullMode=false',
+    // android.enableR8 supprimé depuis AGP 7.0 — on désactive via build.gradle uniquement
     'kotlin.incremental=false',
     'kotlin.daemon.jvm.options=-Xmx256m',
   ].join('\n') + '\n';
